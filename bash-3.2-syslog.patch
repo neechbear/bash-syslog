@@ -1,0 +1,159 @@
+--- parse.y	2006-09-19 20:37:21.000000000 +0000
++++ parse.y	2009-06-05 14:59:33.000000000 +0000
+@@ -56,6 +56,15 @@
+ 
+ #include "shmbutil.h"
+ 
++/* Neechi */
++#include <utmp.h>
++#include <string.h>
++#include <pwd.h>
++#include <grp.h>
++#include <unistd.h>
++#include <sys/syslog.h>
++
++
+ #if defined (READLINE)
+ #  include "bashline.h"
+ #  include <readline/readline.h>
+@@ -112,6 +121,10 @@
+ extern int extended_glob;
+ #endif
+ 
++/* Neechi */
++extern int paranoid_log __P((const char *line));
++
++
+ extern int eof_encountered;
+ extern int no_line_editing, running_under_emacs;
+ extern int current_command_number;
+@@ -2035,6 +2048,9 @@
+ 	    }
+ 	}
+ 
++        /* Neechi */
++        if (interactive_shell && shell_input_line && SHOULD_PROMPT())
++                paranoid_log(shell_input_line);
+ #endif /* HISTORY */
+ 
+       if (shell_input_line)
+@@ -2103,6 +2119,119 @@
+   return (uc);
+ }
+ 
++/* Neechi */
++/* trim
++   trim leading and trailing whitespace from a string
++   the input string is modified by this function
++ */
++char * trim( char * instr) {
++    int i = 0 ;
++    // loop backwards through the instr and place a string terminator overr
++    // whitespace characters until we hit non-whitespace
++
++    for( i = strlen( instr) -1; i >= 0 ; i--) {
++        // replace any trailing whitespace with a terminator
++        if( instr[i] == '\t' || instr[i] == ' ') {
++            instr[i] = '\0' ;
++        } else {
++            break ;
++        }
++    }
++
++    // now over write any leading whitespace
++    for( i = 0 ; i < strlen( instr) ; i++) {
++        if( instr[i] != '\t' && instr[i] != ' ') {
++            // safely copy over overlapping memory
++            memmove( instr, &instr[ i], strlen( instr)) ;
++            break ;
++        }
++    }
++
++    return instr ;
++}
++
++/* Neechi */
++int paranoid_log(const char *line)
++{
++        char *cp, *tty;
++        struct utmp *ut;
++        struct utmp search;
++        struct passwd *pw, tmp_pw;
++        struct group *gr, tmp_gr;
++	char *nullstr = "(null)" ;
++
++	/* Bleh if there's nutin to actually log */
++	if ( !line || strlen(line) == 0)
++		return -1;
++
++	/* line is constant we cannot alter it, we need a copy */
++	char *new_line = malloc( strlen( line) +1) ;
++	strcpy( new_line, line) ;
++	new_line = trim(new_line);
++
++	/* Bleh if there's nutin to actually log */
++	if ( !new_line || strlen(new_line) == 0)
++		return -1;
++
++	/* Get the user info - or set to blah */
++        pw = getpwuid(getuid());
++	if (pw == NULL) {
++		pw = &tmp_pw ; 
++		pw->pw_uid = -1;
++		pw->pw_gid = -1;
++		pw->pw_name = nullstr;
++	}
++
++	/* Get the group info - or set to blah */
++        gr = getgrgid(pw->pw_gid);
++	if (gr == NULL) {
++		gr = &tmp_gr ;
++		gr->gr_gid = -1;
++		gr->gr_name = nullstr;
++	}
++
++	/* Get the tty - or bail */
++        if (isatty(0) && (cp = ttyname(0))) {
++                if (strncmp (cp, "/dev/", 5) == 0)
++                        tty = cp + 5;
++                else
++                tty = cp;
++        } else {
++                tty = "???";
++        }
++        if (!tty || !*tty || !strcmp(tty, "???")) {
++		free( new_line) ;
++                return -1;
++	}
++
++        memset(&search, 0, sizeof(search));
++        snprintf(search.ut_line, sizeof(search.ut_line) - 1, "%s", tty);
++        setutent();
++        ut = getutline(&search);
++        if (!ut) {
++		free( new_line) ;
++                return -1;
++	} 
++                
++        if(!*ut->ut_host)
++                strncpy(ut->ut_host, "(local)", 8);
++        ut->ut_host[sizeof(ut->ut_host) - 1] = '\0';
++
++        openlog("bash", LOG_PID | LOG_NDELAY, LOG_LOCAL5);
++        syslog(LOG_INFO, "HISTORY: LOGIN=%s TTY=%s HOST=%s UID=%d(%s) GID=%d(%s) EXEC=%s\n",
++                        ut->ut_user,
++                        ut->ut_line,
++                        ut->ut_host,
++                        pw->pw_uid, pw->pw_name,
++                        gr->gr_gid, gr->gr_name,
++                        new_line
++                );
++        closelog();
++
++	free( new_line) ;	
++        return 0;
++}
++
+ /* Put C back into the input for the shell.  This might need changes for
+    HANDLE_MULTIBYTE around EOLs.  Since we (currently) never push back a
+    character different than we read, shell_input_line_property doesn't need
